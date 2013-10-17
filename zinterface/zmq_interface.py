@@ -4,14 +4,22 @@ All rights reserved.
 
 license: BSD  (see LICENSE)
 """
-import interface
-import zmq, time, os
-import json,types, threading
-import pickle, Queue
+import time
+import os
+import json
+import types
+import threading
+import pickle
+import Queue
 import random
+
+import zmq
+
 
 #this is for types of message function names or subscription keys that should not be in even debug logs
 #use only if you have super sensitive customer stuff potentially exposed
+from zinterface import interface
+
 DO_NOT_LOG_CONTENTS = []
 
 def random_name(base):
@@ -60,7 +68,7 @@ class ZMQClient(interface.InterfaceClient):
     _max_message_num = 99999
     def __init__(self, interface):
         super(ZMQClient, self).__init__(interface)
-        self._socket = self._interface.zcontext().socket(zmq.XREQ)
+        self._socket = self._interface.zcontext().socket(zmq.DEALER)
         self._my_identity = '%s.%d' % (threading.current_thread().name, os.getpid())
         self._socket.setsockopt(zmq.IDENTITY, self._my_identity)
         self._socket.connect('tcp://localhost:%d' % self._interface._request_port)
@@ -136,7 +144,7 @@ class ZMQServer(interface.InterfaceServer):
     def __init__(self, interface):
         super(ZMQServer, self).__init__(interface)
         self.running = False
-        self._socket = self.zcontext().socket(zmq.XREP)
+        self._socket = self.zcontext().socket(zmq.ROUTER)
         self._socket.bind('tcp://*:%d' % interface._request_port)
 
     def _wrap_exception(self, exception):

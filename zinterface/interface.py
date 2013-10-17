@@ -4,13 +4,33 @@ All rights reserved.
 
 license: BSD  (see LICENSE)
 """
-import inspect, threading, time
+import inspect, json
+import threading
 from collections import defaultdict
 import logging
 
-tlocal = threading.local()
 
+tlocal = threading.local()
+interface_map = {}
 log_module = logging
+
+def load_interfaces(file_path):
+    """
+    loads all interfaces from the give path.  It is expected to contrain a json dictionary if
+    interfaces as written by save_interfaces.client.
+    """
+    with open(file_path, 'r') as f:
+        mapping = json.load(f)
+    return mapping
+
+def save_interfaces(file_path, interfaces = None):
+    """
+    Saves all interfaces in the interface_map to the given_path.
+    """
+    interfaces = interfaces or interface_map
+    with open(file_path, 'w') as f:
+        json.dump(interfaces, f)
+
 
 def get_logger():
     return log_module.getLogger('interface_py')
@@ -34,7 +54,7 @@ def interface_class():
     """
     global _interface_class
     if not _interface_class:
-        from zmq_interface import ZMQInterface
+        from zinterface.zmq_interface import ZMQInterface
         _interface_class = ZMQInterface
     return _interface_class
 
@@ -386,23 +406,17 @@ class InterfacePublisher(InterfaceAccess):
     def publish(self, key, *values):
         pass
 
-def use_interface_type(interface_type):
-    global RPC_TYPE, interfaces, interface_map
-    if interface_type not in ('XMLRPC', '0mq'):
-        logger.error('%s in not implemented.  Only "XMLRPC" and "Rmq" are suported',
-            interface_type)
-    else:
-        if interface_type != RPC_TYPE:
-            #TODO consider case of mid_stream change IFF we support it. Perhaps in unittests only?
-            interface_map.clear()
-            RPC_TYPE = interface_type
 
-interface_map = {}
+
 
 def names():
     return interface_map.keys()
 
 def create_interface(name, request_port, subscribe_port):
+    """
+    Creates an basis interface with the given name and ports and adds it
+    to the interface_map.  Returns the interface.
+    """
     interface = interface_class()(name, request_port, subscribe_port)
     interface_map[name] = interface
     return interface
