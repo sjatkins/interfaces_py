@@ -16,18 +16,20 @@ import random
 import zmq
 
 
+
 #this is for types of message function names or subscription keys that should not be in even debug logs
 #use only if you have super sensitive customer stuff potentially exposed
 from zinterface import interface
 
 DO_NOT_LOG_CONTENTS = []
+logger = interface.get_logger('zinterface')
 
 def random_name(base):
     return '%s_%d' % (base, random.getrandbits(24))
 
 
 def ok_to_log(message, level = interface.logging.DEBUG):
-    if interface.logger.level > level: return True
+    if logger.level > level: return True
     for s in DO_NOT_LOG_CONTENTS:
         if s in message:
             return False
@@ -60,7 +62,7 @@ class ZMQInterface(interface.Interface):
         return ZMQSubscriber(self)
 
     def create_publisher(self):
-        interface.logger.debug('creating %s publisher', self.name)
+        logger.debug('creating %s publisher', self.name)
         return ZMQPublisher(self)
 
 
@@ -73,7 +75,7 @@ class ZMQClient(interface.InterfaceClient):
         self._socket.setsockopt(zmq.IDENTITY, self._my_identity)
         self._socket.connect('tcp://localhost:%d' % self._interface._request_port)
         self._message_num = 0
-        self.sender = self.Sender(self)
+        self.sender = self.Sender(self, interface)
 
     def _message_id(self):
         mid = str(self._message_num)
@@ -83,46 +85,50 @@ class ZMQClient(interface.InterfaceClient):
         return mid
 
     class Sender(object):
-        def __init__(self, client):
+        def __init__(self, client, interface):
             self.client = client
+            self._interface = interface
 
         def set_name(self, method_name):
             self._name = method_name
             return self
 
+
         def __call__(self, *args, **kwargs):
+            timeout = 1000
             try:
                 async = kwargs.get('__async', False)
                 wait_on_it = kwargs.pop('__wait', None)
                 msg = self.client.marshall_call(self._name, args, kwargs)
                 _current_mid = self.client._message_id()
                 if ok_to_log(msg):
-                    interface.logger.debug('sending message #%s contents %s for client %s',
+                    logger.debug('sending message #%s contents %s for client %s',
                         _current_mid, msg, self.client._my_identity)
 
                 self.client._socket.send_multipart([_current_mid, msg])
                 if not async:
                     while True:
-                        got_something = self.client._socket.poll(None if wait_on_it else 100000)
+                        got_something = self.client._socket.poll(None if wait_on_it else timeout)
                         if not got_something:       # alert the grammar police!
                             got_something = self.client._socket.poll(0)
                         if got_something:
                             _mid, reply = self.client._socket.recv_multipart()
                             if _mid != _current_mid:
-                                interface.logger.debug('%s got reply to previous message %s when on message %s',
+                                logger.debug('%s got reply to previous message %s when on message %s',
                                     self.client.name , _mid, _current_mid)
                                 continue
                             else:
                                 return self.client.unmarshall_reply(reply)
                         else:
-                            interface.logger.error('call to %s function %s from %s took over 10 seconds to come back.',
-                                self.client.name, self._name, self.client._my_identity)
+                            print 'nothing received'
+                            logger.error('call to interface %s.%s from %s took over %d second[s] to come back.',
+                                self.client._interface.name, self._name, self.client._my_identity, timeout/1000)
                             return None
             except:
                 if ok_to_log_arguments(args, kwargs):
-                    interface.logger.exception('error calling %s.%s with args %s, kwargs %s', self.client.name, self._name, args, kwargs)
+                    logger.exception('error calling %s.%s with args %s, kwargs %s', self.client.name, self._name, args, kwargs)
                 else:
-                    interface.logger.exception('error calling %s.%s', self.client.name, self._name)
+                    logger.exception('error calling %s.%s', self.client.name, self._name)
                 raise
 
     def __getattr__(self, name):
@@ -133,7 +139,7 @@ class ZMQClient(interface.InterfaceClient):
 
     def unmarshall_reply(self, reply):
         retval, exception = json.loads(reply)
-        interface.logger.debug('retval = %r, exception = %r', retval, exception)
+        logger.debug('retval = %r, exception = %r', retval, exception)
         if exception:
             exception = pickle.loads(str(exception))
             raise exception
@@ -153,16 +159,22 @@ class ZMQServer(interface.InterfaceServer):
         return pickle.dumps(exception)
 
 
+    def reply_with(self, return_val, exception=None):
+        reply = self.marshall_reply(return_val, exception)
+        self._socket.send(reply)
+
     def handle_msg(self, fname=None):
         sender, message_id, msg = self._socket.recv_multipart()
+        print 'logger is', logger
         if ok_to_log(msg):
-            interface.logger.debug("received message %s with id %s from client %s",
+            logger.debug("received message %s with id %s from client %s",
                          msg, message_id, sender)
 
-        def reply_with(return_val, exception=None, __async=False):
+
+        def reply_with(return_val, exception=None, __async=False): #specialized for multipart
             if not __async:
                 reply = self.marshall_reply(return_val, exception)
-                interface.logger.debug("replying with %r", reply)
+                logger.debug("replying with %r", reply)
                 self._socket.send_multipart([sender, message_id, reply])
 
         return_val, exception = None, None
@@ -172,36 +184,32 @@ class ZMQServer(interface.InterfaceServer):
             fname, args, kwargs = self.unmarshall_request(msg)
             async = kwargs.pop('__async', False)
 #            if ok_to_log_arguments(args, kwargs):
-#                interface.logger.debug('message components %r,%r,%r', fname, args, kwargs)
+#                logger.debug('message components %r,%r,%r', fname, args, kwargs)
         except interface.BadCallException, e:
             reply_with(None, e, async)
             if ok_to_log(msg):
-                interface.logger.exception('could not unmarshall request to %s interface: %s', self.name, msg)
+                logger.exception('could not unmarshall request to %s interface: %s', self.name, msg)
             else:
-                interface.logger.exception('could not unmarshall request to %s interface: containing log masked elements in %r', 
+                logger.exception('could not unmarshall request to %s interface: containing log masked elements in %r',
                                  self.name, DO_NOT_LOG_CONTENTS)
 
-        if super(ZMQServer, self).handle_msg(fname):
-            return
-        
         func = self._function_map.get(fname)
         if func:
             try:
                 return_val = func(*args, **kwargs)
             except Exception, e:
                 if ok_to_log_arguments(args, kwargs):
-                    interface.logger.debug('%s invocation of %s(%s,%s) threw exception', self.name, fname, args, kwargs)
+                    logger.debug('%s invocation of %s(%s,%s) threw exception', self.name, fname, args, kwargs)
                 else:
-                    interface.logger.debug('%s invocation of %s threw exception', self.name, fname)
+                    logger.debug('%s invocation of %s threw exception', self.name, fname)
 
                 exception = e
         else:
             s = "%s interface serves no such function: %r" % (self.name, fname)
             exception = Exception(s)
-            interface.logger.debug(s)
+            logger.debug(s)
 
         reply_with(return_val, exception, async)
-        return
 
     def unmarshall_request(self, message):
         """
@@ -209,7 +217,7 @@ class ZMQServer(interface.InterfaceServer):
         [<funtion_name>, <arg_list>, <keyword_arg_dictionary>]
         """
 #        if ok_to_log(message):
-#            interface.logger.debug('attempting to unmarshall %s', message)
+#            logger.debug('attempting to unmarshall %s', message)
         
         parts = json.loads(message)
         if type(parts) != types.ListType or len(parts) != 3:
@@ -232,7 +240,7 @@ class ZMQServer(interface.InterfaceServer):
                 exception = self._wrap_exception(exception)
             return json.dumps((retval, exception))
         except:
-            interface.logger.exception('failed to marshal reply retval %r, exception %r', retval, exception)
+            logger.exception('failed to marshal reply retval %r, exception %r', retval, exception)
             return json.dumps((None, None))
 
 def unmarshall_pub(msg):
@@ -263,13 +271,13 @@ class ZMQGenericSubscriber(object):
 
     def _add_interface(self, interface_name):
         subscriber = interface.subscriber(interface_name)
-        interface.logger.debug("found %r for %s" , interface_name, subscriber)
+        logger.debug("found %r for %s" , interface_name, subscriber)
         if subscriber:
             self._interfaces_of_interest[interface_name] = subscriber
             self._poll.register(subscriber.socket(), zmq.POLLIN)
-            interface.logger.debug('registered %s with socket %r', subscriber.name, subscriber.socket())
+            logger.debug('registered %s with socket %r', subscriber.name, subscriber.socket())
         else:
-            interface.logger.debug("no interface named %s found", interface_name)
+            logger.debug("no interface named %s found", interface_name)
 
     def handle_subscribed_info(self):
         my_socket = self.zcontext.socket(zmq.PULL)
@@ -284,7 +292,7 @@ class ZMQGenericSubscriber(object):
             for socket in sockets:
                 msg = socket.recv()
                 if ok_to_log(msg):
-                    interface.logger.debug('generic subscriber received %s', msg)
+                    logger.debug('generic subscriber received %s', msg)
                 if socket == my_socket:
                     #only 1 message which is interface
                     self._add_interface(msg)
@@ -294,19 +302,19 @@ class ZMQGenericSubscriber(object):
                     try:
                         data = unmarshall_pub(msg)
                     except:
-                        interface.logger('exception unmarhalling data in GeneralSubscriber: %r', data)
+                        logger('exception unmarhalling data in GeneralSubscriber: %r', data)
                     try:
                         if ok_to_log(msg):
-                            interface.logger.debug('got data %s', data)
+                            logger.debug('got data %s', data)
                         interface_name, key, valuelist = data
                         subscriber = self._interfaces_of_interest.get(interface_name)
                         if subscriber:
                             subscriber.handle_signal(key, valuelist)
                             subscriber._event.set()
                         else:
-                            interface.logger.debug('no subscriber info for %s', interface_name)
+                            logger.debug('no subscriber info for %s', interface_name)
                     except:
-                        interface.logger.exception('exception firing callback for %s(%s,%r)', interface_name, key, valuelist)
+                        logger.exception('exception firing callback for %s(%s,%r)', interface_name, key, valuelist)
 
 class ZMQSubscriber(interface.InterfaceSubscriber):
     _general_sub = None
@@ -335,7 +343,7 @@ class ZMQSubscriber(interface.InterfaceSubscriber):
             self._socket = self.zcontext().socket(zmq.SUB)
             self._socket.connect('tcp://localhost:%d' % port)
             self._socket.setsockopt(zmq.SUBSCRIBE, "")
-        interface.logger.debug('%s subscriber on port %d, socket %r',
+        logger.debug('%s subscriber on port %d, socket %r',
             self.name, port, self._socket)
         return self._socket
 
@@ -351,14 +359,14 @@ class ZMQPublisher(interface.InterfacePublisher):
             self._socket = self.owner.zcontext().socket(zmq.PUB)
             port = self.owner.subscribe_port()
             self._socket.bind('tcp://*:%d' % port)
-            interface.logger.debug('%s publisher bound to %d', self.owner.name, port)
+            logger.debug('%s publisher bound to %d', self.owner.name, port)
             while True:
                 try:
                     msg = self.owner.queue.get()
-                    interface.logger.debug('%s publishing sent %s', self.owner.name, msg)
+                    logger.debug('%s publishing sent %s', self.owner.name, msg)
                     self._socket.send(msg)
                 except:
-                    interface.logger.exception('publishng thread died!!!')
+                    logger.exception('publishng thread died!!!')
                     
     def __init__(self, interface):
         super(ZMQPublisher, self).__init__(interface)
@@ -368,7 +376,7 @@ class ZMQPublisher(interface.InterfacePublisher):
 
     def publish(self, key, *value_list):
         pub_msg = self.marshall_pub(key, value_list)
-        interface.logger.debug('%s publishing queued %s', self.name, pub_msg)
+        logger.debug('%s publishing queued %s', self.name, pub_msg)
         self.queue.put(pub_msg)
         time.sleep(0.001) #give other threads a chance
 

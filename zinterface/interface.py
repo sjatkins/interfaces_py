@@ -32,8 +32,8 @@ def save_interfaces(file_path, interfaces = None):
         json.dump(interfaces, f)
 
 
-def get_logger():
-    return log_module.getLogger('interface_py')
+def get_logger(name='zinterface'):
+    return log_module.getLogger(name)
 
 logger = get_logger()
 
@@ -305,24 +305,21 @@ class InterfaceServer(InterfaceAccess):
         InterfaceAccess.__init__(self, interface)
         self.running = False
         self._function_map = {}
+        self.register_function(self.ping)
+        self.register_function(self.stop_serving)
 
     def reply_with(self, return_val, exception=None):
         raise NotImplementedError('reply_with')
 
+
     def handle_msg(self, fname):
-        if fname == 'stop_serving':
-            self.stop_serving()
-            return True
-        if fname == 'ping':
-            self.ping()
-            return True
-        return False
+        pass
 
     def stop_serving(self):
         self.running = False
 
     def ping(self):
-        return self.reply_with('pong')
+        return True
 
     def serve_forever(self):
         self.running = True
@@ -330,7 +327,7 @@ class InterfaceServer(InterfaceAccess):
         while self.running:
             self.handle_msg()
         logger.debug("stopping service: %s" % self._interface.name)
-        raise NotImplementedError('serve_forever')
+
 
     def poll(self, milliseconds):
         """Polls for milliseconds and returns whether anything
@@ -350,6 +347,8 @@ class InterfaceServer(InterfaceAccess):
         self._function_map[name] = func
         #TODO use FunctionDescription
 
+    def methods(self):
+        pass
 
 class InterfaceSubscriber(InterfaceAccess):
     """interface subscribe abstraction"""

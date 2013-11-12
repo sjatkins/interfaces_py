@@ -75,6 +75,9 @@ class TestInterface(unittest.TestCase):
         a = self.foo()().simply_add(33, 47)
         self.assertTrue(a == 80)
 
+    def test_ping(self):
+        self.assertTrue(self.foo()().ping())
+
     def test_d_get_subscriber(self):
         subscriber = self.foo().subscriber()
         print 'foo local subscriber = %s' % self.foo()._local_subscriber
@@ -102,6 +105,9 @@ class TestInterface(unittest.TestCase):
         time.sleep(0.001)
         i_test.subscriber().wait(3)
         self.assertTrue(self._my_callback_called)
+
+    def test_zlast(self):
+        self.foo()().stop_serving()
 
     def tearDown(self):
         pass
